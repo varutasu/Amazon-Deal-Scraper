@@ -5,9 +5,8 @@ import cv2
 import numpy as np
 import pytesseract
 import random
-import requests
 import time
-from requests.structures import CaseInsensitiveDict
+from curl_cffi import requests as curl_requests
 
 class AmazonScraper:
     def __init__(self, path=None, proxy=False):
@@ -16,10 +15,9 @@ class AmazonScraper:
 
         self.base = "https://myvipon.com/"
         self.domain = "www.amazon.com"
-        self.session = requests.Session()
+        self.session = curl_requests.Session(impersonate="chrome")
         if proxy:
-            self.session.proxies.update(
-                {"https": proxy})  # Proxy must be in format recognized by python.
+            self.session.proxies = {"https": proxy, "http": proxy}
 
         self.webhook = ""
         self.debug = False
@@ -81,20 +79,19 @@ class AmazonScraper:
             "Newest": "newest"
         }
 
-        self.headers = CaseInsensitiveDict()
-        self.headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0"
-        self.headers["Accept-Language"] = "en-US,en;q=0.5"
-        #self.headers["Accept-Encoding"] = "gzip, deflate, br"
-        self.headers["X-Requested-With"] = "XMLHttpRequest"
-        self.headers["Origin"] = "https://myvipon.com"
-        self.headers["DNT"] = "1"
-        self.headers["Connection"] = "keep-alive"
-        self.headers["Referer"] = "https://myvipon.com/"
-        self.headers["Sec-Fetch-Dest"] = "empty"
-        self.headers["Sec-Fetch-Mode"] = "cors"
-        self.headers["Sec-Fetch-Site"] = "same-origin"
-        self.headers["Pragma"] = "no-cache"
-        self.headers["Cache-Control"] = "no-cache"
+        self.headers = {
+            "Accept-Language": "en-US,en;q=0.5",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://myvipon.com",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Referer": "https://myvipon.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+        }
 
         self.session.get("https://myvipon.com/")
 
@@ -125,11 +122,11 @@ class AmazonScraper:
             return True
 
     def check_working(self, cookies):
-        resp = requests.post("https://www.myvipon.com/api2/passport/email-status", cookies=cookies)
+        resp = curl_requests.post("https://www.myvipon.com/api2/passport/email-status", cookies=cookies, impersonate="chrome")
         if resp.status_code == 401:
             return False
 
-        resp2 = requests.get("https://www.myvipon.com/shopper/request/index?ref=shopper_request", cookies=cookies)
+        resp2 = curl_requests.get("https://www.myvipon.com/shopper/request/index?ref=shopper_request", cookies=cookies, impersonate="chrome")
         lines = resp2.text.splitlines()
         for line in lines:
             if "Remaining Vouchers:" in line:
@@ -177,21 +174,19 @@ class AmazonScraper:
         return True
 
     def handle_first_request(self, idd):
-        headers = CaseInsensitiveDict()
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
-        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-        headers["Accept-Language"] = "en-US,en;q=0.5"
-        headers["DNT"] = "1"
-        headers["Connection"] = "keep-alive"
-        # headers["Referer"] = "https://www.myvipon.com/product/10500720-WOOMADA-Insulated-Lunch-Bag-for-Reusable-amazon-coupons?sl=c2ba4bd9970d893c625be5ffe811da00&f=fd_web_detail"
-        headers["Upgrade-Insecure-Requests"] = "1"
-        headers["Sec-Fetch-Dest"] = "document"
-        headers["Sec-Fetch-Mode"] = "navigate"
-        headers["Sec-Fetch-Site"] = "same-origin"
-        headers["Sec-Fetch-User"] = "?1"
-        headers["Pragma"] = "no-cache"
-        headers["Cache-Control"] = "no-cache"
-        headers["TE"] = "trailers"
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+        }
 
         first_check = self.session.get(
             f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00",
@@ -233,20 +228,18 @@ class AmazonScraper:
 
     def handle_captcha(self, idd):
 
-        headers = CaseInsensitiveDict()
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
-        headers["Accept"] = "image/avif,image/webp,*/*"
-        headers["Accept-Language"] = "en-US,en;q=0.5"
-        #headers["Accept-Encoding"] = "gzip, deflate, br"
-        headers["DNT"] = "1"
-        headers["Connection"] = "keep-alive"
-        headers["Referer"] = f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00"
-        headers["Sec-Fetch-Dest"] = "image"
-        headers["Sec-Fetch-Mode"] = "no-cors"
-        headers["Sec-Fetch-Site"] = "same-origin"
-        headers["Pragma"] = "no-cache"
-        headers["Cache-Control"] = "no-cache"
-        headers["TE"] = "trailers"
+        headers = {
+            "Accept": "image/avif,image/webp,*/*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Referer": f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+        }
 
         IMG_TO_SOLVE = self.session.get("https://www.myvipon.com/code/verify", headers=headers)
         print(headers)
@@ -260,25 +253,22 @@ class AmazonScraper:
         print("Solved captcha: " + captcha)
         print(result)
 
-        headers = CaseInsensitiveDict()
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
-        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-        headers["Accept-Language"] = "en-US,en;q=0.5"
-        headers["Accept-Encoding"] = "gzip, deflate, br"
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Origin"] = "https://www.myvipon.com"
-        headers["DNT"] = "1"
-        headers["Connection"] = "keep-alive"
-        headers[
-            "Referer"] = f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00"
-        headers["Upgrade-Insecure-Requests"] = "1"
-        headers["Sec-Fetch-Dest"] = "document"
-        headers["Sec-Fetch-Mode"] = "navigate"
-        headers["Sec-Fetch-Site"] = "same-origin"
-        headers["Sec-Fetch-User"] = "?1"
-        headers["Pragma"] = "no-cache"
-        headers["Cache-Control"] = "no-cache"
-        headers["TE"] = "trailers"
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.myvipon.com",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Referer": f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+        }
 
         SOLVE_REQUEST = self.session.post(
             f"https://www.myvipon.com/code/check?id={idd}&sl=c2ba4bd9970d893c625be5ffe811da00&f=fd_web_detail&search_id=0&event_type=search&position=0",
@@ -480,22 +470,20 @@ class AmazonScraper:
 
         url = "https://search.myvipon.com/es/viponpc/search"
 
-        headers = CaseInsensitiveDict()
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
-        headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
-        headers["Accept-Language"] = "en-US,en;q=0.5"
-        #headers["Accept-Encoding"] = "gzip, deflate, br"
-        headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
-        headers["Origin"] = "https://www.myvipon.com"
-        headers["DNT"] = "1"
-        headers["Connection"] = "keep-alive"
-        headers["Referer"] = "https://www.myvipon.com/"
-        headers["Sec-Fetch-Dest"] = "empty"
-        headers["Sec-Fetch-Mode"] = "cors"
-        headers["Sec-Fetch-Site"] = "same-site"
-        headers["Pragma"] = "no-cache"
-        headers["Cache-Control"] = "no-cache"
-        headers["TE"] = "trailers"
+        headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://www.myvipon.com",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Referer": "https://www.myvipon.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache",
+        }
 
         data = f"search={search}&group={category}&page={page}&discount={discount}&domain=www.amazon.com&fba={fufillment}&sort={sorting}&price={price}"
 

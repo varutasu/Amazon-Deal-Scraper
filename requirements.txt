@@ -3,6 +3,6 @@ beautifulsoup4
 opencv-python
 numpy
 pytesseract
-requests
+curl_cffi
 motor
 pymongo
