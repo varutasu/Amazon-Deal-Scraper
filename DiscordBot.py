@@ -136,7 +136,11 @@ async def Deal_Routine():
                 None, scraper.get_coupons_search, "", "", "", "", "newest", "", page
             )
 
-            if coupons.get("status") != "success" or not coupons.get("data"):
+            if coupons.get("status") != "success":
+                print(f"[DealRouter] API error: {coupons.get('message', '?')} (code={coupons.get('code', '?')})")
+                break
+
+            if not coupons.get("data"):
                 break
 
             parsed = await bot.loop.run_in_executor(None, scraper.parse_search, coupons["data"])
@@ -232,9 +236,12 @@ async def process_filter(user_id, filter_data, already_checked, index):
                                               filter_data["discount"], filter_data["category"],
                                               filter_data["sorting"], filter_data["price"], inner_page)
 
+        if listings.get("status") != "success" or not listings.get("data"):
+            break
+
         parsed = scraper.parse_search(listings["data"])
 
-        if not listings["data"] or not parsed:
+        if not parsed:
             break
 
         for listing in parsed.values():
@@ -448,9 +455,12 @@ async def search_without_keywords(
 
     coupons_data = await bot.loop.run_in_executor(None, scraper.get_coupons, fulfillment, discount, category, sorting, price, page)
 
-    if coupons_data["status"] != "success":
-        print(coupons_data)
-        await ctx.interaction.followup.send("Something went wrong! Please report this.", ephemeral=True)
+    if coupons_data.get("status") != "success":
+        print(f"[search_without_keywords] API error: {coupons_data}")
+        await ctx.interaction.followup.send(
+            f"Something went wrong! The deal API returned: {coupons_data.get('code', 'unknown')}",
+            ephemeral=True,
+        )
         return
 
     if not coupons_data["data"]:

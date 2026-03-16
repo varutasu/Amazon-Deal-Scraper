@@ -468,9 +468,13 @@ class AmazonScraper:
             print(req.status_code)
 
         if req.status_code != 200:
+            print(f"[API] get_coupons failed: HTTP {req.status_code}")
             return {"status": "error", "message": req.text, "code": str(req.status_code)}
-        else:
+        try:
             return {"status": "success", "data": req.json()["html"]}
+        except (KeyError, ValueError) as e:
+            print(f"[API] get_coupons unexpected response: {e} — {req.text[:500]}")
+            return {"status": "error", "message": str(e), "code": str(req.status_code)}
 
     def get_coupons_search(self, search, fufillment, discount, category, sorting, price, page):
 
@@ -500,15 +504,14 @@ class AmazonScraper:
 
         req = self.session.post(url, headers=headers, data=data)
         
+        if req.status_code != 200:
+            print(f"[API] get_coupons_search failed: HTTP {req.status_code} — {req.text[:500]}")
+            return {"status": "error", "message": req.text, "code": str(req.status_code)}
         try:
-            if req.status_code != 200:
-                return {"status": "error", "message": req.text, "code": str(req.status_code)}
-            else:
-                return {"status": "success", "data": req.json()["data"]}
-        except Exception as e:
-            print(req.text)
-            print(req.status_code)
-            raise e
+            return {"status": "success", "data": req.json()["data"]}
+        except (KeyError, ValueError) as e:
+            print(f"[API] get_coupons_search unexpected response: {e} — {req.text[:500]}")
+            return {"status": "error", "message": str(e), "code": str(req.status_code)}
 
     def parse(self, data):
         products = {}
