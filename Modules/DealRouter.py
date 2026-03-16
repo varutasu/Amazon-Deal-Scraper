@@ -54,6 +54,19 @@ class DealRouter:
         if deal.get("category"):
             embed.add_field(name="Category", value=deal["category"], inline=True)
 
+        if deal.get("coupon_code"):
+            embed.add_field(
+                name="Promo Code",
+                value=f"```\n{deal['coupon_code']}\n```",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Promo Code",
+                value="Use `/search_with_keywords` to claim",
+                inline=False,
+            )
+
         return embed
 
     async def post_deal_to_routes(self, deal):

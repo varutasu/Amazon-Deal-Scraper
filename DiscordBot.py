@@ -156,6 +156,20 @@ async def Deal_Routine():
                 if await Notification.is_deal_posted(deal_id):
                     continue
 
+                discount_pct = deal_router.parse_discount(listing.get("discount", "0"))
+                routes = await Notification.get_matching_deal_routes(discount_pct)
+                if not routes:
+                    continue
+
+                if scraper.current is not None:
+                    try:
+                        code = await bot.loop.run_in_executor(None, scraper.get_code, deal_id)
+                        if isinstance(code, str) and code not in ("This shouldn't of happened!",):
+                            listing["coupon_code"] = code
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        print(f"[DealRouter] Code fetch failed for {deal_id}: {e}")
+
                 count = await deal_router.post_deal_to_routes(listing)
                 if count > 0:
                     await Notification.mark_deal_posted(deal_id)
