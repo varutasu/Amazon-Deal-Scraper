@@ -6,3 +6,4 @@ pytesseract
 requests
 motor
 pymongo
+aiohttp

@@ -1,5 +1,17 @@
+import os
+
 from Variables import Constants
 import discord
+
+_ASSOCIATE_TAG = os.environ.get("AMAZON_ASSOCIATE_TAG", "")
+
+
+def affiliate_link(url):
+    """Append the Amazon Associates tag to a URL if configured."""
+    if not _ASSOCIATE_TAG or not url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}tag={_ASSOCIATE_TAG}"
 
 def guild_has_support(guild):
     return any(member.id in Constants.SUPPORT_USERS for member in guild.members)
@@ -15,8 +27,10 @@ def create_sad_embed():
     return sad_embed
 
 def create_listing_embed(listing_data):
+    amz_url = affiliate_link(listing_data.get("amz_link", ""))
     da_embed = discord.Embed(
-        title=listing_data["title"]
+        title=listing_data["title"],
+        url=amz_url if amz_url else None,
     )
     da_embed.color = discord.Color.random()
     da_embed.set_image(url=listing_data["img_src"])
@@ -37,8 +51,10 @@ def create_listing_embed(listing_data):
     return da_embed
 
 def create_listing_embed_generic(listing_data):
+    amz_url = affiliate_link(listing_data.get("amz_link", ""))
     da_embed = discord.Embed(
-        title=listing_data["title"]
+        title=listing_data["title"],
+        url=amz_url if amz_url else None,
     )
     da_embed.color = discord.Color.random()
     da_embed.set_image(url=listing_data["img_src"])
@@ -54,11 +70,15 @@ def create_listing_embed_generic(listing_data):
     return da_embed
 
 def create_filter_embed(filter_count):
+    interval_sec = int(os.environ.get("NOTIFICATION_INTERVAL", "21600"))
+    interval_hr = interval_sec // 3600
+    interval_str = f"every {interval_hr} hour{'s' if interval_hr != 1 else ''}"
+
     filter_embed = discord.Embed(
         title=f"{filter_count} of your filters are being checked right now!",
         description="I'm going through your filters right now and checking for any new listings.\n\n"
                     "If there aren't any new deals, you can try to change your filter criteria or wait for the next couple checks.\n\n"
-                    "BTW this process occurs every 6 hours"
+                    f"BTW this process occurs {interval_str}"
     )
     filter_embed.color = discord.Color.random()
     filter_embed.set_footer(text=f"Developed by {Constants.AUTHOR_NAME}")

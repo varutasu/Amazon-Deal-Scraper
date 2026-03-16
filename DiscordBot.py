@@ -1,19 +1,28 @@
+import asyncio
 import json
+import os
+import traceback
+
 import discord
 from discord.ext import tasks
 
 from Variables import Constants
 from Modules.AmazonScraper import AmazonScraper
+from Modules.WebhookNotifier import WebhookNotifier
 from Notification.DatabaseHandler import DatabaseHandler
 import Modules.Helper as Helper
 from Components.Pagination.PaginationView import Pagination
 from Components.Pagination.PaginationSchedulerView import PaginationScheduler
 from Components.RemoveFilterDropdown.View import NotificationRemoveView
 
+NOTIFICATION_INTERVAL = float(os.environ.get("NOTIFICATION_INTERVAL", "21600"))
+WEBHOOK_INTERVAL = float(os.environ.get("WEBHOOK_INTERVAL", "1800"))
+WEBHOOK_MAX_PAGES = int(os.environ.get("WEBHOOK_MAX_PAGES", "10"))
+
 async def mandatory_check(ctx):
     allowed = await Notification.get_whitelist(True)
     disallowed = await Notification.get_blacklist(True)
-    
+
     if str(ctx.channel.id) not in allowed: return "This command is not allowed to be used in this channel!"
     if ctx.guild is None: return "This command can only be used in a server!"
     if str(ctx.guild.id) in disallowed: return "This guild has been blacklisted from using this bot. Please contact support if you believe this is a mistake."
@@ -23,12 +32,11 @@ async def mandatory_check(ctx):
 @tasks.loop(seconds=3600.0)
 async def regularly_check():
     print("Starting regular check")
-    
+
     whitelisted = await Notification.get_whitelist(True)
     disallowed = await Notification.get_blacklist(True)
-        
+
     for guild in bot.guilds:
-        # print("checking")
         if not Helper.guild_has_support(guild):
             await Notification.add_blacklist(guild.id)
             for channel in guild.channels:
@@ -43,22 +51,46 @@ async def regularly_check():
 init = True
 
 scraper = AmazonScraper(Constants.TESSERACT_LOCATION, proxy=Constants.PROXY)
+webhook_notifier = WebhookNotifier(
+    associate_tag=os.environ.get("AMAZON_ASSOCIATE_TAG", ""),
+)
 
 Notification = DatabaseHandler()
 
 categories = list(scraper.categories.keys())
 categories.append("all")
 
-accounts = open("data/cookies.txt", "r").read().split("\n")
-
-for account in accounts:
-    account = json.loads(account)
-    scraper.load_account(account)
-
-scraper.rotate_accounts()
+try:
+    with open("data/cookies.txt", "r") as f:
+        accounts = f.read().strip().split("\n")
+    for account in accounts:
+        if account.strip():
+            scraper.load_account(json.loads(account))
+    scraper.rotate_accounts()
+except FileNotFoundError:
+    print("[Startup] WARNING: data/cookies.txt not found — coupon fetching disabled")
+except json.JSONDecodeError as e:
+    print(f"[Startup] ERROR: Failed to parse cookies.txt: {e}")
 
 intents = discord.Intents.all()
 bot = discord.Bot(intents=intents)
+
+
+async def log_error(message, error=None):
+    """Log an error to the error channel if configured, otherwise just print."""
+    error_text = f"**[Error]** {message}"
+    if error:
+        tb = traceback.format_exception(type(error), error, error.__traceback__)
+        error_text += f"\n```\n{''.join(tb[-3:])}```"
+    print(error_text)
+    if Constants.ERROR_CHANNEL:
+        try:
+            ch = bot.get_channel(Constants.ERROR_CHANNEL)
+            if ch:
+                await ch.send(error_text[:2000])
+        except Exception:
+            pass
+
 
 @bot.event
 async def on_ready():
@@ -75,13 +107,76 @@ async def on_ready():
             )
         )
     print(f'We have logged in as {bot.user}')
-    
+
+    await Notification.ensure_indexes()
+
     Notification_Routine.start()
-    
+
+    if webhook_notifier.enabled:
+        Webhook_Routine.start()
+        print(f"[Webhook] Routine started (interval={int(WEBHOOK_INTERVAL)}s, max_pages={WEBHOOK_MAX_PAGES})")
+    else:
+        print("[Webhook] No DEAL_WEBHOOKS configured — webhook routine disabled")
+
     if not Constants.OVERRIDE_BLACKLIST:
         await regularly_check.start()
 
-@tasks.loop(seconds=21600.0)
+
+# ─── Webhook Routine ───────────────────────────────────────────────
+
+@tasks.loop(seconds=WEBHOOK_INTERVAL)
+async def Webhook_Routine():
+    if not webhook_notifier.enabled:
+        return
+
+    print("[Webhook] Starting webhook scan")
+    posted_count = 0
+
+    try:
+        page = 1
+        while page <= WEBHOOK_MAX_PAGES:
+            coupons = await bot.loop.run_in_executor(
+                None, scraper.get_coupons_search, "", "", "", "", "newest", "", page
+            )
+
+            if coupons.get("status") != "success" or not coupons.get("data"):
+                break
+
+            parsed = await bot.loop.run_in_executor(None, scraper.parse_search, coupons["data"])
+
+            if not parsed:
+                break
+
+            for listing in parsed.values():
+                deal_id = str(listing.get("id", ""))
+                if not deal_id or deal_id == "-1":
+                    continue
+
+                if await Notification.is_webhook_posted(deal_id):
+                    continue
+
+                discount_pct = webhook_notifier._parse_discount(listing.get("discount", "0"))
+                routes = webhook_notifier.get_routes_for_deal(discount_pct, listing.get("category"))
+
+                for route in routes:
+                    await webhook_notifier.post_deal(route, listing)
+                    await asyncio.sleep(0.5)
+
+                await Notification.mark_webhook_posted(deal_id)
+                posted_count += 1
+
+            page += 1
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        await log_error("Webhook routine failed", e)
+
+    print(f"[Webhook] Scan complete — posted {posted_count} new deal(s)")
+
+
+# ─── DM Notification Routine ───────────────────────────────────────
+
+@tasks.loop(seconds=NOTIFICATION_INTERVAL)
 async def Notification_Routine():
 
     disallowed = await Notification.get_blacklist(True)
@@ -94,12 +189,15 @@ async def Notification_Routine():
         return
 
     for user_data in all_users:
-        if str(user_data["guild"]) in disallowed:
-            bot.loop.create_task(bot.get_user(user_data["user"]).send("The guild you were in has been blacklisted from using this bot. Your notification task will not be fulfilled due to this. Please contact support if you believe this is a mistake."))
-            continue
-        if user_data["filters"] is None:
-            continue
-        await process_user_data(user_data)
+        try:
+            if str(user_data["guild"]) in disallowed:
+                bot.loop.create_task(bot.get_user(user_data["user"]).send("The guild you were in has been blacklisted from using this bot. Your notification task will not be fulfilled due to this. Please contact support if you believe this is a mistake."))
+                continue
+            if user_data["filters"] is None:
+                continue
+            await process_user_data(user_data)
+        except Exception as e:
+            await log_error(f"Failed processing user {user_data.get('user', '?')}", e)
 
 async def send_notification(user_id, username, filter_embed):
     await bot.get_user(user_id).send(
@@ -120,8 +218,6 @@ async def process_user_data(user_data):
     for filter_data in filters:
         index = filters.index(filter_data)
 
-        already_checked = already_checked
-
         to_send_to_user = await process_filter(user_id, filter_data, already_checked, index)
 
         if to_send_to_user:
@@ -136,7 +232,6 @@ async def process_user_data(user_data):
 async def process_filter(user_id, filter_data, already_checked, index):
     to_send_to_user = []
     inner_page = 1
-    still_more_listings = True
 
     already_checked = already_checked[index]
 
@@ -207,6 +302,7 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: d
     if isinstance(error, discord.Forbidden):
         await ctx.respond("I was unable to send a message to you. Please check your privacy settings.", ephemeral=True)
     else:
+        await log_error(f"Command error in /{ctx.command.qualified_name if ctx.command else '?'}", error)
         raise error
 
 @bot.command(description="Clear someone's already checked stuff", guild_ids=Constants.SUPPORT_GUILD)
@@ -285,7 +381,7 @@ async def get_whitelist(
 
     whitelist = await Notification.get_whitelist()
     await ctx.interaction.followup.send(whitelist, ephemeral=True)
-    
+
 @bot.command(description="Get blacklist", guild_ids=Constants.SUPPORT_GUILD)
 async def get_blacklist(
     ctx
@@ -298,7 +394,7 @@ async def get_blacklist(
 
     blacklist = await Notification.get_blacklist()
     await ctx.interaction.followup.send(blacklist, ephemeral=True)
-    
+
 @bot.command(description="Add a guild to blacklist", guild_ids=Constants.SUPPORT_GUILD)
 async def add_blacklist(
     ctx,
@@ -312,7 +408,7 @@ async def add_blacklist(
 
     toDo = await Notification.add_blacklist(guild)
     await ctx.interaction.followup.send(toDo, ephemeral=True)
-    
+
 @bot.command(description="Remove a guild from blacklist", guild_ids=Constants.SUPPORT_GUILD)
 async def remove_blacklist(
     ctx,
@@ -339,9 +435,10 @@ async def search_without_keywords(
 ):
     await ctx.defer(ephemeral=True)
 
-    # Log the command to the log channel
-    log_channel = bot.get_channel(Constants.LOG_CHANNEL)
-    await log_channel.send(Helper.get_command_log_message_without(ctx, fulfillment, discount, category, sorting, price_beginning, price_end))
+    if Constants.LOG_CHANNEL:
+        log_channel = bot.get_channel(Constants.LOG_CHANNEL)
+        if log_channel:
+            await log_channel.send(Helper.get_command_log_message_without(ctx, fulfillment, discount, category, sorting, price_beginning, price_end))
 
     check_result = await mandatory_check(ctx)
     if check_result is not None:
@@ -396,10 +493,11 @@ async def search_with_keywords(
 ):
     await ctx.defer(ephemeral=True)
 
-    # Log the command to the log channel
-    log_channel = bot.get_channel(Constants.LOG_CHANNEL)
-    await log_channel.send(
-        f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}** with the following options:\nSearch: **{search}**\nFulfillment: **{fulfillment}**\nDiscount: **{discount}**\nCategory: **{category}**\nSorting: **{sorting}**\nPrice Beginning: **{price_beginning}**\nPrice End: **{price_end}**")
+    if Constants.LOG_CHANNEL:
+        log_channel = bot.get_channel(Constants.LOG_CHANNEL)
+        if log_channel:
+            await log_channel.send(
+                f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}** with the following options:\nSearch: **{search}**\nFulfillment: **{fulfillment}**\nDiscount: **{discount}**\nCategory: **{category}**\nSorting: **{sorting}**\nPrice Beginning: **{price_beginning}**\nPrice End: **{price_end}**")
 
     check = await mandatory_check(ctx)
     if check is not None:
@@ -407,14 +505,14 @@ async def search_with_keywords(
         return
 
     comment = ""
-    
+
     fulfillment = Helper.map_fulfillment(fulfillment)
     discount = Helper.map_discount(discount)
     sorting = Helper.map_sorting(sorting)
     category = Helper.map_category(category)
 
     price = Helper.map_price(price_beginning, price_end)
-    
+
     search = search or ""
 
     page = 1
@@ -468,8 +566,10 @@ async def add_filter(
 ):
     await ctx.defer(ephemeral=True)
 
-    log_channel = bot.get_channel(Constants.LOG_CHANNEL)
-    await log_channel.send(Helper.get_command_log_message_search(ctx, search, fulfillment, discount, category, sorting, price_beginning, price_end))
+    if Constants.LOG_CHANNEL:
+        log_channel = bot.get_channel(Constants.LOG_CHANNEL)
+        if log_channel:
+            await log_channel.send(Helper.get_command_log_message_search(ctx, search, fulfillment, discount, category, sorting, price_beginning, price_end))
 
     check_result = await mandatory_check(ctx)
     if check_result is not None:
@@ -477,9 +577,8 @@ async def add_filter(
         return
 
 
-    # Check if user already has 3 filters
     if len(await Notification.get_filters(ctx.author.id)) >= Notification.MAX_FILTERS:
-        await ctx.interaction.followup.send("You already have 3 filters!", ephemeral=True)
+        await ctx.interaction.followup.send(f"You already have {Notification.MAX_FILTERS} filters!", ephemeral=True)
         return
 
     fulfillment = Helper.map_fulfillment(fulfillment)
@@ -506,14 +605,15 @@ async def add_filter(
 
     await ctx.interaction.followup.send("Successfully added filter!", ephemeral=True)
 
-# Get list of filters
 @bot.command(description="Get a list of your filters!")
 async def list_filters(ctx):
     await ctx.defer(ephemeral=True)
 
-    log_channel = bot.get_channel(Constants.LOG_CHANNEL)
-    await log_channel.send(
-        f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}**")
+    if Constants.LOG_CHANNEL:
+        log_channel = bot.get_channel(Constants.LOG_CHANNEL)
+        if log_channel:
+            await log_channel.send(
+                f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}**")
 
     check = await mandatory_check(ctx)
     if check:
@@ -540,9 +640,11 @@ async def remove_filters(ctx):
     global filters
     await ctx.defer(ephemeral=True)
 
-    log_channel = bot.get_channel(Constants.LOG_CHANNEL)
-    await log_channel.send(
-        f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}**")
+    if Constants.LOG_CHANNEL:
+        log_channel = bot.get_channel(Constants.LOG_CHANNEL)
+        if log_channel:
+            await log_channel.send(
+                f"**{ctx.author}** used the command **/{ctx.command.qualified_name}** in channel **{ctx.channel}**")
 
     check = await mandatory_check(ctx)
     if check:

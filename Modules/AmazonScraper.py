@@ -147,16 +147,24 @@ class AmazonScraper:
             print("Account not working: " + str(account))
 
     def rotate_accounts(self):
-        # TODO: Add account rotation
-        self.session.headers 
+        now = time.time()
+        recycled = []
+        for acct, limited_at in self.limit:
+            if now - limited_at >= 86400:
+                recycled.append((acct, limited_at))
+        for entry in recycled:
+            self.limit.remove(entry)
+            self.working.append(entry[0])
+            print(f"[AccountRotation] Recycled a rate-limited account (waited {int(now - entry[1])}s)")
 
-        if self.working == []:
-            self.current = None;
+        if not self.working:
+            self.current = None
             return
 
         self.current = self.working.pop(0)
 
         if not self.check_working(self.current):
+            self.limit.append((self.current, now))
             return self.rotate_accounts()
 
         self.session.cookies.update(self.current)
@@ -330,8 +338,8 @@ class AmazonScraper:
 
         print(codeContainer)
 
-        codeContainer.replace("CODE: ", "")
-        codeContainer.replace("You have requested this code previously. CODE: ", "")
+        codeContainer = codeContainer.replace("You have requested this code previously. CODE: ", "")
+        codeContainer = codeContainer.replace("CODE: ", "")
 
         return codeContainer
 

@@ -1,7 +1,9 @@
 import discord
 
 from Variables import Constants
+from Components.Feedback.View import FeedbackView
 from Components.Report.View import ReportView
+from Modules.Helper import affiliate_link
 
 class PaginationScheduler(discord.ui.View):
     def __init__(self, scraper, scraped, bot, embed2Store):
@@ -27,7 +29,7 @@ class PaginationScheduler(discord.ui.View):
         # afterPrice = self.scraped[self.page]["discounted_price"].replace("$", "").replace("FREE", "0.00")
 
         daEmbed.add_field(name="Fulfillment", value=self.scraped[self.page]["fulfillment"], inline=True)
-        daEmbed.add_field(name="Amazon Listing", value=self.scraped[self.page]["amz_link"], inline=True)
+        daEmbed.add_field(name="Amazon Listing", value=affiliate_link(self.scraped[self.page]["amz_link"]), inline=True)
 
         daEmbed.add_field(name="Shipping", value=str(self.scraped[self.page]["shipping"]), inline=True)
         daEmbed.add_field(name="Category", value=self.scraped[self.page]["category"], inline=True)
