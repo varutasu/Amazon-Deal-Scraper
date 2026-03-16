@@ -8,7 +8,7 @@ from discord.ext import tasks
 
 from Variables import Constants
 from Modules.AmazonScraper import AmazonScraper
-from Modules.WebhookNotifier import WebhookNotifier
+from Modules.DealRouter import DealRouter
 from Notification.DatabaseHandler import DatabaseHandler
 import Modules.Helper as Helper
 from Components.Pagination.PaginationView import Pagination
@@ -16,8 +16,8 @@ from Components.Pagination.PaginationSchedulerView import PaginationScheduler
 from Components.RemoveFilterDropdown.View import NotificationRemoveView
 
 NOTIFICATION_INTERVAL = float(os.environ.get("NOTIFICATION_INTERVAL", "21600"))
-WEBHOOK_INTERVAL = float(os.environ.get("WEBHOOK_INTERVAL", "1800"))
-WEBHOOK_MAX_PAGES = int(os.environ.get("WEBHOOK_MAX_PAGES", "10"))
+DEAL_SCAN_INTERVAL = float(os.environ.get("DEAL_SCAN_INTERVAL", "1800"))
+DEAL_SCAN_MAX_PAGES = int(os.environ.get("DEAL_SCAN_MAX_PAGES", "10"))
 
 async def mandatory_check(ctx):
     allowed = await Notification.get_whitelist(True)
@@ -51,11 +51,8 @@ async def regularly_check():
 init = True
 
 scraper = AmazonScraper(Constants.TESSERACT_LOCATION, proxy=Constants.PROXY)
-webhook_notifier = WebhookNotifier(
-    associate_tag=os.environ.get("AMAZON_ASSOCIATE_TAG", ""),
-)
-
 Notification = DatabaseHandler()
+deal_router = None
 
 categories = list(scraper.categories.keys())
 categories.append("all")
@@ -94,6 +91,9 @@ async def log_error(message, error=None):
 
 @bot.event
 async def on_ready():
+    global deal_router
+    deal_router = DealRouter(bot, Notification)
+
     if Constants.MAINTENANCE:
         await bot.change_presence(
             activity=discord.Activity(
@@ -111,30 +111,27 @@ async def on_ready():
     await Notification.ensure_indexes()
 
     Notification_Routine.start()
-
-    if webhook_notifier.enabled:
-        Webhook_Routine.start()
-        print(f"[Webhook] Routine started (interval={int(WEBHOOK_INTERVAL)}s, max_pages={WEBHOOK_MAX_PAGES})")
-    else:
-        print("[Webhook] No DEAL_WEBHOOKS configured — webhook routine disabled")
+    Deal_Routine.start()
+    print(f"[DealRouter] Scan routine started (interval={int(DEAL_SCAN_INTERVAL)}s, max_pages={DEAL_SCAN_MAX_PAGES})")
 
     if not Constants.OVERRIDE_BLACKLIST:
         await regularly_check.start()
 
 
-# ─── Webhook Routine ───────────────────────────────────────────────
+# ─── Deal Scan Routine ─────────────────────────────────────────────
 
-@tasks.loop(seconds=WEBHOOK_INTERVAL)
-async def Webhook_Routine():
-    if not webhook_notifier.enabled:
+@tasks.loop(seconds=DEAL_SCAN_INTERVAL)
+async def Deal_Routine():
+    routes = await Notification.get_all_deal_routes()
+    if not routes:
         return
 
-    print("[Webhook] Starting webhook scan")
+    print("[DealRouter] Starting deal scan")
     posted_count = 0
 
     try:
         page = 1
-        while page <= WEBHOOK_MAX_PAGES:
+        while page <= DEAL_SCAN_MAX_PAGES:
             coupons = await bot.loop.run_in_executor(
                 None, scraper.get_coupons_search, "", "", "", "", "newest", "", page
             )
@@ -152,26 +149,21 @@ async def Webhook_Routine():
                 if not deal_id or deal_id == "-1":
                     continue
 
-                if await Notification.is_webhook_posted(deal_id):
+                if await Notification.is_deal_posted(deal_id):
                     continue
 
-                discount_pct = webhook_notifier._parse_discount(listing.get("discount", "0"))
-                routes = webhook_notifier.get_routes_for_deal(discount_pct, listing.get("category"))
-
-                for route in routes:
-                    await webhook_notifier.post_deal(route, listing)
-                    await asyncio.sleep(0.5)
-
-                await Notification.mark_webhook_posted(deal_id)
-                posted_count += 1
+                count = await deal_router.post_deal_to_routes(listing)
+                if count > 0:
+                    await Notification.mark_deal_posted(deal_id)
+                    posted_count += 1
 
             page += 1
             await asyncio.sleep(1)
 
     except Exception as e:
-        await log_error("Webhook routine failed", e)
+        await log_error("Deal scan routine failed", e)
 
-    print(f"[Webhook] Scan complete — posted {posted_count} new deal(s)")
+    print(f"[DealRouter] Scan complete — posted {posted_count} new deal(s)")
 
 
 # ─── DM Notification Routine ───────────────────────────────────────
@@ -669,6 +661,107 @@ async def remove_filters(ctx):
     else:
         await ctx.interaction.followup.send(embed=embed, view=NotificationRemoveView(ctx, bot, Notification, filters, embed), ephemeral=True)
 
+
+
+# ─── Deal Route Management ─────────────────────────────────────────
+
+deal_route = bot.create_group("deal_route", "Manage automatic deal posting to channels")
+
+
+@deal_route.command(description="Route deals to a channel based on discount range")
+@discord.default_permissions(manage_channels=True)
+async def add(
+    ctx,
+    channel: discord.Option(discord.TextChannel, description="Channel to post deals to"),
+    min_discount: discord.Option(int, description="Minimum discount % (0-100)", min_value=0, max_value=100),
+    max_discount: discord.Option(int, description="Maximum discount % (0-100)", min_value=0, max_value=100),
+):
+    await ctx.defer(ephemeral=True)
+
+    if min_discount > max_discount:
+        await ctx.interaction.followup.send(
+            "Min discount can't be greater than max discount!", ephemeral=True
+        )
+        return
+
+    perms = channel.permissions_for(ctx.guild.me)
+    if not perms.send_messages or not perms.embed_links:
+        await ctx.interaction.followup.send(
+            f"I need **Send Messages** and **Embed Links** permissions in {channel.mention}!",
+            ephemeral=True,
+        )
+        return
+
+    result = await Notification.add_deal_route(
+        guild_id=ctx.guild.id,
+        channel_id=channel.id,
+        min_discount=min_discount,
+        max_discount=max_discount,
+        created_by=ctx.author.id,
+    )
+
+    if result == "updated":
+        await ctx.interaction.followup.send(
+            f"Updated route for {channel.mention}: **{min_discount}–{max_discount}%** off deals",
+            ephemeral=True,
+        )
+    else:
+        await ctx.interaction.followup.send(
+            f"Deals with **{min_discount}–{max_discount}%** off will now post to {channel.mention}",
+            ephemeral=True,
+        )
+
+
+@deal_route.command(name="list", description="Show all deal routes for this server")
+@discord.default_permissions(manage_channels=True)
+async def list_routes(ctx):
+    await ctx.defer(ephemeral=True)
+
+    routes = await Notification.get_deal_routes(ctx.guild.id)
+
+    if not routes:
+        await ctx.interaction.followup.send(
+            "No deal routes configured. Use `/deal_route add` to get started!",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="Deal Routes",
+        description="Deals are automatically posted to these channels based on discount range.",
+        color=0x2ECC71,
+    )
+
+    for route in routes:
+        channel = ctx.guild.get_channel(route["channel_id"])
+        ch_name = channel.mention if channel else f"(deleted channel {route['channel_id']})"
+        embed.add_field(
+            name=ch_name,
+            value=f"**{route['min_discount']}–{route['max_discount']}%** off",
+            inline=True,
+        )
+
+    await ctx.interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@deal_route.command(description="Stop posting deals to a channel")
+@discord.default_permissions(manage_channels=True)
+async def remove(
+    ctx,
+    channel: discord.Option(discord.TextChannel, description="Channel to stop posting to"),
+):
+    await ctx.defer(ephemeral=True)
+
+    removed = await Notification.remove_deal_route(ctx.guild.id, channel.id)
+
+    if removed:
+        await ctx.interaction.followup.send(
+            f"Removed deal route for {channel.mention}", ephemeral=True
+        )
+    else:
+        await ctx.interaction.followup.send(
+            f"No deal route found for {channel.mention}", ephemeral=True
+        )
 
 
 try:

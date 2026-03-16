@@ -21,25 +21,83 @@ class DatabaseHandler:
         self.db = self.client['AmazonDealScraper']
         self.collection = self.db['noti-pref']
         self.settings = self.db['settings']
-        self.webhook_posted = self.db['webhook-posted']
+        self.deal_posted = self.db['deal-posted']
+        self.deal_routes = self.db['deal-routes']
 
-    # --- Webhook dedup ---
+    # --- Deal dedup ---
 
-    async def is_webhook_posted(self, deal_id):
-        return await self.webhook_posted.find_one({"deal_id": str(deal_id)}) is not None
+    async def is_deal_posted(self, deal_id):
+        return await self.deal_posted.find_one({"deal_id": str(deal_id)}) is not None
 
-    async def mark_webhook_posted(self, deal_id):
+    async def mark_deal_posted(self, deal_id):
         try:
-            await self.webhook_posted.insert_one({
+            await self.deal_posted.insert_one({
                 "deal_id": str(deal_id),
                 "posted_at": datetime.now(timezone.utc),
             })
         except DuplicateKeyError:
             pass
 
+    # --- Deal routes ---
+
+    async def add_deal_route(self, guild_id, channel_id, min_discount, max_discount, created_by=None):
+        existing = await self.deal_routes.find_one({
+            "guild_id": guild_id, "channel_id": channel_id,
+        })
+        if existing:
+            await self.deal_routes.update_one(
+                {"guild_id": guild_id, "channel_id": channel_id},
+                {"$set": {
+                    "min_discount": min_discount,
+                    "max_discount": max_discount,
+                    "updated_at": datetime.now(timezone.utc),
+                }},
+            )
+            return "updated"
+
+        await self.deal_routes.insert_one({
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "min_discount": min_discount,
+            "max_discount": max_discount,
+            "created_by": created_by,
+            "created_at": datetime.now(timezone.utc),
+        })
+        return "created"
+
+    async def remove_deal_route(self, guild_id, channel_id):
+        result = await self.deal_routes.delete_one({
+            "guild_id": guild_id, "channel_id": channel_id,
+        })
+        return result.deleted_count > 0
+
+    async def get_deal_routes(self, guild_id):
+        routes = []
+        async for doc in self.deal_routes.find({"guild_id": guild_id}):
+            routes.append(doc)
+        return routes
+
+    async def get_all_deal_routes(self):
+        routes = []
+        async for doc in self.deal_routes.find():
+            routes.append(doc)
+        return routes
+
+    async def get_matching_deal_routes(self, discount_pct):
+        routes = []
+        async for doc in self.deal_routes.find({
+            "min_discount": {"$lte": discount_pct},
+            "max_discount": {"$gte": discount_pct},
+        }):
+            routes.append(doc)
+        return routes
+
     async def ensure_indexes(self):
-        await self.webhook_posted.create_index("deal_id", unique=True)
-        await self.webhook_posted.create_index("posted_at", expireAfterSeconds=604800)
+        await self.deal_posted.create_index("deal_id", unique=True)
+        await self.deal_posted.create_index("posted_at", expireAfterSeconds=604800)
+        await self.deal_routes.create_index(
+            [("guild_id", 1), ("channel_id", 1)], unique=True,
+        )
 
     # --- User management ---
 
