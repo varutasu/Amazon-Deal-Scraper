@@ -23,6 +23,7 @@ class DatabaseHandler:
         self.settings = self.db['settings']
         self.deal_posted = self.db['deal-posted']
         self.deal_routes = self.db['deal-routes']
+        self.code_queue = self.db['code-queue']
 
     # --- Deal dedup ---
 
@@ -92,12 +93,39 @@ class DatabaseHandler:
             routes.append(doc)
         return routes
 
+    # --- Code fetch queue ---
+
+    async def queue_code_fetch(self, deal_id, messages):
+        """Queue a deal for background code fetching. messages = [(channel_id, message_id), ...]"""
+        await self.code_queue.insert_one({
+            "deal_id": str(deal_id),
+            "messages": [{"channel_id": c, "message_id": m} for c, m in messages],
+            "queued_at": datetime.now(timezone.utc),
+        })
+
+    async def dequeue_code_fetch(self):
+        """Get and remove the oldest item from the code queue."""
+        return await self.code_queue.find_one_and_delete({}, sort=[("queued_at", 1)])
+
+    async def requeue_code_fetch(self, item):
+        """Put a failed item back at the end of the queue."""
+        item.pop("_id", None)
+        item["queued_at"] = datetime.now(timezone.utc)
+        await self.code_queue.insert_one(item)
+
+    async def get_code_queue_size(self):
+        return await self.code_queue.count_documents({})
+
+    async def clear_code_queue(self):
+        await self.code_queue.delete_many({})
+
     async def ensure_indexes(self):
         await self.deal_posted.create_index("deal_id", unique=True)
         await self.deal_posted.create_index("posted_at", expireAfterSeconds=604800)
         await self.deal_routes.create_index(
             [("guild_id", 1), ("channel_id", 1)], unique=True,
         )
+        await self.code_queue.create_index("queued_at", expireAfterSeconds=7200)
 
     # --- User management ---
 

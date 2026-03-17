@@ -182,56 +182,48 @@ class AmazonScraper:
             print(f"[CodeFetch] Max retries reached for {idd}")
             return "rate_limited"
 
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-User": "?1",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        }
+        url = f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00"
 
-        first_check = self.session.get(
-            f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00",
-            headers=headers)
+        try:
+            first_check = curl_requests.get(
+                url,
+                cookies=self.current,
+                impersonate="chrome",
+            )
+        except Exception as e:
+            print(f"[CodeFetch] Request exception for {idd}: {e}")
+            return "rate_limited"
 
-        if self._is_cloudflare_block(first_check.text):
+        if first_check.status_code == 429 or self._is_cloudflare_block(first_check.text):
             print(f"[CodeFetch] Cloudflare blocked request for {idd} (HTTP {first_check.status_code})")
             return "rate_limited"
 
         if any(x in first_check.text for x in self.SUCCESSFUL):
-            print("Success")
+            print(f"[CodeFetch] Success for {idd}")
             return self.return_codes(first_check.text)
 
         elif any(x in first_check.text for x in self.FAILED):
             if self.check_for_captcha(first_check.text):
-                print("Captcha detected, solving...")
+                print(f"[CodeFetch] Captcha for {idd}, solving...")
                 return self.handle_captcha(idd)
 
             elif "Invalid Request" in first_check.text:
-                print(f"Invalid Request, retrying ({_retries + 1}/3)...")
-                time.sleep(2)
+                print(f"[CodeFetch] Invalid Request for {idd}, retrying ({_retries + 1}/3)...")
+                time.sleep(3)
                 return self.handle_first_request(idd, _retries=_retries + 1)
 
             elif "Not more than 30 vouchers within 24 hours" in first_check.text:
+                print(f"[CodeFetch] Voucher limit hit, rotating account")
                 self.rotate_accounts()
                 if self.current is None:
                     return "rate_limited"
                 return self.handle_first_request(idd, _retries=_retries + 1)
 
             elif "Oops, Instant vouchers have run out.." in first_check.text:
-                return ["This deal has ran out of vouchers"]
-
-            else:
-                pass
+                return "out_of_vouchers"
 
         print(f"[CodeFetch] Unknown response for {idd} (HTTP {first_check.status_code})")
-        return ["Something went wrong"]
+        return "failed"
 
     def handle_captcha(self, idd):
 

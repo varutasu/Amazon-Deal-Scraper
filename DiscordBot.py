@@ -18,8 +18,7 @@ from Components.RemoveFilterDropdown.View import NotificationRemoveView
 NOTIFICATION_INTERVAL = float(os.environ.get("NOTIFICATION_INTERVAL", "21600"))
 DEAL_SCAN_INTERVAL = float(os.environ.get("DEAL_SCAN_INTERVAL", "1800"))
 DEAL_SCAN_MAX_PAGES = int(os.environ.get("DEAL_SCAN_MAX_PAGES", "10"))
-DEAL_MAX_CODES_PER_SCAN = int(os.environ.get("DEAL_MAX_CODES_PER_SCAN", "5"))
-DEAL_CODE_FETCH_DELAY = float(os.environ.get("DEAL_CODE_FETCH_DELAY", "8"))
+CODE_FETCH_INTERVAL = float(os.environ.get("CODE_FETCH_INTERVAL", "30"))
 
 async def mandatory_check(ctx):
     allowed = await Notification.get_whitelist(True)
@@ -114,7 +113,9 @@ async def on_ready():
 
     Notification_Routine.start()
     Deal_Routine.start()
+    Code_Fetch_Routine.start()
     print(f"[DealRouter] Scan routine started (interval={int(DEAL_SCAN_INTERVAL)}s, max_pages={DEAL_SCAN_MAX_PAGES})")
+    print(f"[CodeFetch] Background routine started (interval={int(CODE_FETCH_INTERVAL)}s)")
 
     if not Constants.OVERRIDE_BLACKLIST:
         await regularly_check.start()
@@ -124,14 +125,14 @@ async def on_ready():
 
 @tasks.loop(seconds=DEAL_SCAN_INTERVAL)
 async def Deal_Routine():
+    """Scan for new deals, post them immediately (without codes), queue for code fetching."""
     routes = await Notification.get_all_deal_routes()
     if not routes:
         return
 
     print("[DealRouter] Starting deal scan")
     posted_count = 0
-    codes_fetched = 0
-    code_fetch_blocked = False
+    queued_count = 0
 
     try:
         page = 1
@@ -165,29 +166,14 @@ async def Deal_Routine():
                 if not matching:
                     continue
 
-                can_fetch = (
-                    scraper.current is not None
-                    and not code_fetch_blocked
-                    and codes_fetched < DEAL_MAX_CODES_PER_SCAN
-                )
-
-                if can_fetch:
-                    try:
-                        code = await bot.loop.run_in_executor(None, scraper.get_code, deal_id)
-                        if code == "rate_limited":
-                            print(f"[DealRouter] Cloudflare rate-limited — skipping codes for rest of scan")
-                            code_fetch_blocked = True
-                        elif isinstance(code, str) and code not in ("This shouldn't of happened!",):
-                            listing["coupon_code"] = code
-                            codes_fetched += 1
-                        await asyncio.sleep(DEAL_CODE_FETCH_DELAY)
-                    except Exception as e:
-                        print(f"[DealRouter] Code fetch failed for {deal_id}: {e}")
-
-                count = await deal_router.post_deal_to_routes(listing)
-                if count > 0:
+                posted_messages = await deal_router.post_deal_to_routes(listing, code_status="pending")
+                if posted_messages:
                     await Notification.mark_deal_posted(deal_id)
                     posted_count += 1
+
+                    if scraper.current is not None:
+                        await Notification.queue_code_fetch(deal_id, posted_messages)
+                        queued_count += 1
 
             page += 1
             await asyncio.sleep(1)
@@ -195,7 +181,59 @@ async def Deal_Routine():
     except Exception as e:
         await log_error("Deal scan routine failed", e)
 
-    print(f"[DealRouter] Scan complete — posted {posted_count} new deal(s), fetched {codes_fetched} code(s)")
+    queue_size = await Notification.get_code_queue_size()
+    print(f"[DealRouter] Scan complete — posted {posted_count} deal(s), queued {queued_count} for codes (queue size: {queue_size})")
+
+
+@tasks.loop(seconds=CODE_FETCH_INTERVAL)
+async def Code_Fetch_Routine():
+    """Slowly process the code queue: fetch one code, edit the Discord messages."""
+    if scraper.current is None:
+        return
+
+    item = await Notification.dequeue_code_fetch()
+    if not item:
+        return
+
+    deal_id = item["deal_id"]
+    messages = item["messages"]
+
+    try:
+        code = await bot.loop.run_in_executor(None, scraper.get_code, deal_id)
+    except Exception as e:
+        print(f"[CodeFetch] Exception for {deal_id}: {e}")
+        code = "failed"
+
+    if code == "rate_limited":
+        print(f"[CodeFetch] Rate-limited on {deal_id} — requeueing and backing off")
+        await Notification.requeue_code_fetch(item)
+        await asyncio.sleep(60)
+        return
+
+    is_valid_code = (
+        isinstance(code, str)
+        and code not in ("failed", "rate_limited", "out_of_vouchers",
+                         "This shouldn't of happened!", "Something went wrong")
+        and not isinstance(code, list)
+    )
+
+    if is_valid_code:
+        print(f"[CodeFetch] Got code for {deal_id}: {code[:20]}...")
+    else:
+        print(f"[CodeFetch] No code for {deal_id}: {code}")
+
+    edited = 0
+    for msg_info in messages:
+        success = await deal_router.edit_message_with_code(
+            msg_info["channel_id"],
+            msg_info["message_id"],
+            code if is_valid_code else None,
+        )
+        if success:
+            edited += 1
+
+    if edited:
+        print(f"[CodeFetch] Edited {edited} message(s) for deal {deal_id}")
 
 
 # ─── DM Notification Routine ───────────────────────────────────────
