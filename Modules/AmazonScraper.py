@@ -202,6 +202,31 @@ class AmazonScraper:
             print(f"[CodeFetch] Cloudflare blocked request for {idd} (HTTP {first_check.status_code})")
             return "rate_limited"
 
+        try:
+            jdata = first_check.json()
+            msg = jdata.get("msg", "")
+            if "please login" in msg.lower():
+                print(f"[CodeFetch] Session expired for {idd}, rotating account")
+                self.rotate_accounts()
+                if self.current is None:
+                    return "rate_limited"
+                return self.handle_first_request(idd, _retries=_retries + 1)
+            if "60 codes every day" in msg or "claim up to" in msg:
+                print(f"[CodeFetch] Daily limit (60) hit, rotating account")
+                self.limit.append((self.current, time.time()))
+                self.rotate_accounts()
+                if self.current is None:
+                    return "rate_limited"
+                return self.handle_first_request(idd, _retries=_retries + 1)
+            if "30 vouchers" in msg:
+                print(f"[CodeFetch] Voucher limit (30) hit, rotating account")
+                self.rotate_accounts()
+                if self.current is None:
+                    return "rate_limited"
+                return self.handle_first_request(idd, _retries=_retries + 1)
+        except (ValueError, KeyError, AttributeError):
+            pass
+
         if any(x in first_check.text for x in self.SUCCESSFUL):
             print(f"[CodeFetch] Success for {idd}")
             return self.return_codes(first_check.text)
