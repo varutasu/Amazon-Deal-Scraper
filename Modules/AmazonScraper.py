@@ -181,11 +181,6 @@ class AmazonScraper:
             return
 
         self.current = self.working.pop(0)
-
-        if not self.check_working(self.current):
-            self.limit.append((self.current, now))
-            return self.rotate_accounts()
-
         self.session.cookies.update(self.current)
 
         try:
