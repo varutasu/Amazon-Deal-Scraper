@@ -225,23 +225,32 @@ class AmazonScraper:
         try:
             jdata = first_check.json()
             msg = jdata.get("msg", "")
-            if "please login" in msg.lower():
+
+            if isinstance(msg, dict):
+                inner = msg.get("data", {})
+                voucher = inner.get("voucher", "")
+                if voucher and inner.get("msg") == "success":
+                    print(f"[CodeFetch] Got voucher for {idd}: {voucher}")
+                    return voucher
+
+            msg_str = str(msg).lower() if not isinstance(msg, str) else msg.lower()
+            if "please login" in msg_str:
                 print(f"[CodeFetch] Session expired for {idd}, rotating account")
                 self.rotate_accounts()
                 if self.current is None:
                     return "rate_limited"
                 return self.handle_first_request(idd, _retries=_retries + 1)
-            if "trying too often" in msg.lower():
+            if "trying too often" in msg_str:
                 print(f"[CodeFetch] MyVipon rate limit for {idd}: trying too often")
                 return "rate_limited"
-            if "60 codes every day" in msg or "claim up to" in msg:
+            if "60 codes every day" in msg_str or "claim up to" in msg_str:
                 print(f"[CodeFetch] Daily limit (60) hit, rotating account")
                 self.limit.append((self.current, time.time()))
                 self.rotate_accounts()
                 if self.current is None:
                     return "rate_limited"
                 return self.handle_first_request(idd, _retries=_retries + 1)
-            if "30 vouchers" in msg:
+            if "30 vouchers" in msg_str:
                 print(f"[CodeFetch] Voucher limit (30) hit, rotating account")
                 self.rotate_accounts()
                 if self.current is None:
