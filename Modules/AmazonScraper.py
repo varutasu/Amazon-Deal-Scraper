@@ -127,17 +127,34 @@ class AmazonScraper:
             return True
 
     def check_working(self, cookies):
-        resp = curl_requests.post("https://www.myvipon.com/api2/passport/email-status", cookies=cookies, impersonate="chrome")
-        if resp.status_code == 401:
-            return False
+        kwargs = dict(cookies=cookies, impersonate="chrome")
+        if self.code_fetch_proxies:
+            kwargs["proxies"] = self.code_fetch_proxies
 
-        resp2 = curl_requests.get("https://www.myvipon.com/shopper/request/index?ref=shopper_request", cookies=cookies, impersonate="chrome")
-        lines = resp2.text.splitlines()
-        for line in lines:
-            if "Remaining Vouchers:" in line:
-                amt = lines[lines.index(line) + 1].split(" (")[0].replace("<p>", "")
-                if int(amt) < 1:
-                    return False
+        try:
+            resp = curl_requests.post("https://www.myvipon.com/api2/passport/email-status", **kwargs)
+            if resp.status_code == 401:
+                return False
+            if resp.status_code == 403:
+                print(f"[check_working] CF blocked email-status (HTTP 403)")
+                return False
+
+            resp2 = curl_requests.get(
+                "https://www.myvipon.com/shopper/request/index?ref=shopper_request", **kwargs
+            )
+            if resp2.status_code == 403:
+                print(f"[check_working] CF blocked voucher check (HTTP 403)")
+                return False
+
+            lines = resp2.text.splitlines()
+            for line in lines:
+                if "Remaining Vouchers:" in line:
+                    amt = lines[lines.index(line) + 1].split(" (")[0].replace("<p>", "")
+                    if int(amt) < 1:
+                        return False
+        except Exception as e:
+            print(f"[check_working] Error: {e}")
+            return False
 
         return True
 
