@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import motor.motor_asyncio
 from pymongo.errors import DuplicateKeyError
@@ -120,6 +120,17 @@ class DatabaseHandler:
 
     async def clear_code_queue(self):
         await self.code_queue.delete_many({})
+
+    async def expire_stale_code_queue(self, max_age_minutes=30):
+        """Remove and return queue items older than max_age_minutes."""
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+        stale = []
+        async for item in self.code_queue.find({"queued_at": {"$lt": cutoff}}):
+            stale.append(item)
+        if stale:
+            ids = [item["_id"] for item in stale]
+            await self.code_queue.delete_many({"_id": {"$in": ids}})
+        return stale
 
     # --- Normalized deals (shared with website) ---
 

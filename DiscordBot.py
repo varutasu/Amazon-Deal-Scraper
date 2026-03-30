@@ -197,10 +197,8 @@ async def Deal_Routine():
                 if posted_messages:
                     await Notification.mark_deal_posted(deal_id)
                     posted_count += 1
-
-                    if scraper.current is not None:
-                        await Notification.queue_code_fetch(deal_id, posted_messages)
-                        queued_count += 1
+                    await Notification.queue_code_fetch(deal_id, posted_messages)
+                    queued_count += 1
 
             page += 1
             await asyncio.sleep(1)
@@ -216,7 +214,17 @@ async def Deal_Routine():
 async def Code_Fetch_Routine():
     """Slowly process the code queue: fetch one code, edit the Discord messages."""
     if scraper.current is None:
-        return
+        await load_cookies_from_mongo()
+        if scraper.current is None:
+            stale = await Notification.expire_stale_code_queue(max_age_minutes=30)
+            if stale:
+                for item in stale:
+                    for msg_info in item.get("messages", []):
+                        await deal_router.edit_message_with_code(
+                            msg_info["channel_id"], msg_info["message_id"], None
+                        )
+                print(f"[CodeFetch] Expired {len(stale)} stale queue item(s) — no accounts available")
+            return
 
     item = await Notification.dequeue_code_fetch()
     if not item:
