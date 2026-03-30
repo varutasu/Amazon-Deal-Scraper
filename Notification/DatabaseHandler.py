@@ -133,7 +133,10 @@ class DatabaseHandler:
 
     async def update_deal_code(self, source, source_id, code):
         """Update the coupon_code for a deal after background code fetching."""
-        update = {"coupon_code": code} if code else {"coupon_code": None, "coupon_type": "none"}
+        if code:
+            update = {"coupon_code": code, "coupon_type": "promo_code"}
+        else:
+            update = {"coupon_code": None, "coupon_type": "none"}
         await self.deals.update_one(
             {"source": source, "source_id": str(source_id)},
             {"$set": update},

@@ -22,7 +22,7 @@ class DealRouter:
         digits = "".join(c for c in cleaned if c.isdigit())
         return int(digits) if digits else 0
 
-    def build_embed(self, deal, code_status="pending"):
+    def build_embed(self, deal, code_status="pending", code=None):
         amz_url = affiliate_link(deal.get("amz_link", ""))
         discount_pct = self.parse_discount(deal.get("discount", "0"))
         title = deal.get("title", "Unknown Product")[:256]
@@ -56,10 +56,11 @@ class DealRouter:
         if deal.get("category"):
             embed.add_field(name="Category", value=deal["category"], inline=True)
 
-        if deal.get("coupon_code"):
+        resolved_code = code or deal.get("coupon_code")
+        if resolved_code:
             embed.add_field(
                 name="Promo Code",
-                value=f"```\n{deal['coupon_code']}\n```",
+                value=f"`{resolved_code}`",
                 inline=False,
             )
         elif code_status == "pending":
@@ -71,11 +72,20 @@ class DealRouter:
         else:
             embed.add_field(
                 name="Promo Code",
-                value="Unavailable — use `/search_with_keywords` to claim",
+                value="Unavailable \u2014 use `/search_with_keywords` to claim",
                 inline=False,
             )
 
         return embed
+
+    @staticmethod
+    def _code_content(code):
+        """Build message content with a copyable code block (Discord adds a Copy button)."""
+        if not code:
+            return None
+        if code.upper() == "DIRECTPRODUCT":
+            return "\u2705 Discount applied automatically at checkout"
+        return f"\U0001f4cb **Promo Code:** ```\n{code}\n```"
 
     async def post_deal_to_routes(self, deal, code_status="pending"):
         """Post deal to matching channels. Returns list of (channel_id, message_id) tuples."""
@@ -89,7 +99,8 @@ class DealRouter:
                 continue
             try:
                 embed = self.build_embed(deal, code_status=code_status)
-                msg = await channel.send(embed=embed)
+                content = self._code_content(deal.get("coupon_code"))
+                msg = await channel.send(content=content, embed=embed)
                 posted_messages.append((channel.id, msg.id))
                 await asyncio.sleep(0.3)
             except discord.Forbidden:
@@ -113,7 +124,7 @@ class DealRouter:
             for i, field in enumerate(embed.fields):
                 if field.name == "Promo Code":
                     if code:
-                        embed.set_field_at(i, name="Promo Code", value=f"```\n{code}\n```", inline=False)
+                        embed.set_field_at(i, name="Promo Code", value=f"`{code}`", inline=False)
                     else:
                         embed.set_field_at(
                             i, name="Promo Code",
@@ -122,7 +133,8 @@ class DealRouter:
                         )
                     break
 
-            await msg.edit(embed=embed)
+            content = self._code_content(code)
+            await msg.edit(content=content, embed=embed)
             return True
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
             print(f"[DealRouter] Failed to edit message {message_id}: {e}")
