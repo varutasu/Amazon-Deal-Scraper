@@ -202,10 +202,7 @@ class AmazonScraper:
         url = f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00"
 
         try:
-            kwargs = dict(cookies=self.current, impersonate="chrome")
-            if self.code_fetch_proxies:
-                kwargs["proxies"] = self.code_fetch_proxies
-            first_check = curl_requests.get(url, **kwargs)
+            first_check = self.session.get(url)
         except Exception as e:
             print(f"[CodeFetch] Request exception for {idd}: {e}")
             return "rate_limited"
