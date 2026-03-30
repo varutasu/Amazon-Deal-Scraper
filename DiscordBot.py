@@ -80,10 +80,11 @@ async def load_cookies_from_mongo():
                 print("[Cookies] No cookies.txt found either — coupon fetching disabled")
             return
 
-        scraper.accounts = []
+        scraper.working = []
         scraper.current = None
         for cookies in cookie_list:
-            scraper.load_account(cookies)
+            scraper.working.append(cookies)
+            print("Adding account (from MongoDB, skip validation)")
         scraper.rotate_accounts()
         print(f"[Cookies] Loaded {len(cookie_list)} account(s) from MongoDB")
     except Exception as e:
