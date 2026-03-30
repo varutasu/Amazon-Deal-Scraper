@@ -20,9 +20,17 @@ class AmazonScraper:
             self.session.proxies = {"https": proxy, "http": proxy}
 
         self.code_fetch_proxies = None
+        self.code_session = None
         if code_fetch_proxy:
             self.code_fetch_proxies = {"https": code_fetch_proxy, "http": code_fetch_proxy}
+            self.code_session = curl_requests.Session(impersonate="chrome120")
+            self.code_session.proxies = self.code_fetch_proxies
             print(f"[AmazonScraper] Code-fetch proxy: {code_fetch_proxy}")
+            try:
+                resp = self.code_session.get("https://www.myvipon.com/", timeout=30)
+                print(f"[AmazonScraper] Code-session warmup: HTTP {resp.status_code}")
+            except Exception as e:
+                print(f"[AmazonScraper] Code-session warmup failed: {e}")
 
         self.webhook = ""
         self.debug = False
@@ -182,6 +190,8 @@ class AmazonScraper:
 
         self.current = self.working.pop(0)
         self.session.cookies.update(self.current)
+        if self.code_session is not None:
+            self.code_session.cookies.update(self.current)
 
         try:
             self.session.get("https://myvipon.com/", headers=self.headers)
@@ -201,8 +211,9 @@ class AmazonScraper:
 
         url = f"https://www.myvipon.com/code/get-code?id={idd}&f=fd_web_detail&position=0&event_type=search&sl=c2ba4bd9970d893c625be5ffe811da00"
 
+        sess = self.code_session if self.code_session is not None else self.session
         try:
-            first_check = self.session.get(url)
+            first_check = sess.get(url, headers=self.headers)
         except Exception as e:
             print(f"[CodeFetch] Request exception for {idd}: {e}")
             return "rate_limited"
@@ -282,7 +293,8 @@ class AmazonScraper:
             "Cache-Control": "no-cache",
         }
 
-        IMG_TO_SOLVE = self.session.get("https://www.myvipon.com/code/verify", headers=headers)
+        sess = self.code_session if self.code_session is not None else self.session
+        IMG_TO_SOLVE = sess.get("https://www.myvipon.com/code/verify", headers=headers)
         print(headers)
         print(self.session.proxies)
         print(self.session.cookies.get_dict())
@@ -311,7 +323,7 @@ class AmazonScraper:
             "Cache-Control": "no-cache",
         }
 
-        SOLVE_REQUEST = self.session.post(
+        SOLVE_REQUEST = sess.post(
             f"https://www.myvipon.com/code/check?id={idd}&sl=c2ba4bd9970d893c625be5ffe811da00&f=fd_web_detail&search_id=0&event_type=search&position=0",
             headers=headers,
             data=f"verifycode={result}&signup-button=")
@@ -351,13 +363,6 @@ class AmazonScraper:
             print("No accounts loaded")
             return ["No accounts loaded"]
 
-        if self.code_fetch_proxies:
-            saved = getattr(self.session, "proxies", None)
-            self.session.proxies = self.code_fetch_proxies
-            try:
-                return self.handle_first_request(idd)
-            finally:
-                self.session.proxies = saved or {}
         return self.handle_first_request(idd)
 
     def check_for_captcha(self, data):
