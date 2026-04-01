@@ -23,7 +23,7 @@ class AmazonScraper:
         self.code_session = None
         if code_fetch_proxy:
             self.code_fetch_proxies = {"https": code_fetch_proxy, "http": code_fetch_proxy}
-            self.code_session = curl_requests.Session(impersonate="chrome120")
+            self.code_session = curl_requests.Session(impersonate="chrome136")
             self.code_session.proxies = self.code_fetch_proxies
             print(f"[AmazonScraper] Code-fetch proxy: {code_fetch_proxy}")
             try:
