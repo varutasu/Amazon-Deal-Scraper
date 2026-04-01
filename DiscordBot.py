@@ -75,7 +75,7 @@ async def load_cookies_from_mongo():
                     if account.strip():
                         scraper.load_account(json.loads(account))
                 scraper.rotate_accounts()
-                print(f"[Cookies] Loaded {len(scraper.accounts)} account(s) from cookies.txt")
+                print(f"[Cookies] Loaded {len(scraper.working)} account(s) from cookies.txt")
             except (FileNotFoundError, json.JSONDecodeError):
                 print("[Cookies] No cookies.txt found either — coupon fetching disabled")
             return
