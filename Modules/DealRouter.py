@@ -9,8 +9,6 @@ from Modules.Helper import affiliate_link
 class DealRouter:
     """Posts scraped deals to Discord channels based on discount-range routes stored in MongoDB."""
 
-    PENDING_CODE_TEXT = "\u23f3 Fetching code... (updates automatically)"
-
     def __init__(self, bot, db_handler):
         self.bot = bot
         self.db = db_handler
@@ -21,20 +19,6 @@ class DealRouter:
         cleaned = str(raw).replace("%", "").replace("-", "").strip()
         digits = "".join(c for c in cleaned if c.isdigit())
         return int(digits) if digits else 0
-
-    @staticmethod
-    def _amazon_view(url):
-        """Create a View with a link button to Amazon."""
-        if not url:
-            return None
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            label="View on Amazon",
-            url=url,
-            style=discord.ButtonStyle.link,
-            emoji="\U0001f6d2",
-        ))
-        return view
 
     @staticmethod
     def _deal_view(url, code=None):
@@ -49,7 +33,7 @@ class DealRouter:
             ))
         return view
 
-    def build_embed(self, deal, code_status="pending", code=None):
+    def build_embed(self, deal, code=None):
         amz_url = affiliate_link(deal.get("amz_link", ""))
         discount_pct = self.parse_discount(deal.get("discount", "0"))
         title = deal.get("title", "Unknown Product")[:256]
@@ -116,18 +100,6 @@ class DealRouter:
                     value=f"**`{resolved_code}`**",
                     inline=False,
                 )
-        elif code_status == "pending":
-            embed.add_field(
-                name="\U0001f50d Promo Code",
-                value=self.PENDING_CODE_TEXT,
-                inline=False,
-            )
-        else:
-            embed.add_field(
-                name="\u274c Promo Code",
-                value="Unavailable \u2014 use `/search_with_keywords` to claim",
-                inline=False,
-            )
 
         embed.set_footer(text="PhantomCart \u2022 phantomcart.shop")
 
@@ -145,72 +117,28 @@ class DealRouter:
             f"```\n{code}\n```"
         )
 
-    async def post_deal_to_routes(self, deal, code_status="pending"):
-        """Post deal to matching channels. Returns list of (channel_id, message_id) tuples."""
+    async def post_deal_with_code(self, deal, code):
+        """Post a deal WITH its code already resolved. Returns number of messages posted."""
         discount_pct = self.parse_discount(deal.get("discount", "0"))
         routes = await self.db.get_matching_deal_routes(discount_pct)
 
         amz_url = affiliate_link(deal.get("amz_link", ""))
         view = self._deal_view(amz_url)
 
-        posted_messages = []
+        posted = 0
         for route in routes:
             channel = self.bot.get_channel(route["channel_id"])
             if not channel:
                 continue
             try:
-                embed = self.build_embed(deal, code_status=code_status)
-                content = self._code_content(deal.get("coupon_code"))
-                msg = await channel.send(content=content, embed=embed, view=view)
-                posted_messages.append((channel.id, msg.id))
+                embed = self.build_embed(deal, code=code)
+                content = self._code_content(code)
+                await channel.send(content=content, embed=embed, view=view)
+                posted += 1
                 await asyncio.sleep(0.3)
             except discord.Forbidden:
                 print(f"[DealRouter] Missing permissions for #{channel.name} ({route['channel_id']})")
             except discord.HTTPException as e:
                 print(f"[DealRouter] Failed to post to #{channel.name}: {e}")
 
-        return posted_messages
-
-    async def edit_message_with_code(self, channel_id, message_id, code):
-        """Edit a previously posted deal message to add the promo code."""
-        channel = self.bot.get_channel(channel_id)
-        if not channel:
-            return False
-        try:
-            msg = await channel.fetch_message(message_id)
-            if not msg.embeds:
-                return False
-
-            embed = msg.embeds[0].copy()
-            amz_url = embed.url
-
-            for i, field in enumerate(embed.fields):
-                if "Promo Code" in field.name:
-                    if code:
-                        if code.upper() == "DIRECTPRODUCT":
-                            embed.set_field_at(
-                                i, name="\u2705 Promo Code",
-                                value="Discount applied automatically at checkout",
-                                inline=False,
-                            )
-                        else:
-                            embed.set_field_at(
-                                i, name="\U0001f4cb Promo Code",
-                                value=f"**`{code}`**",
-                                inline=False,
-                            )
-                    else:
-                        embed.set_field_at(
-                            i, name="\u274c Promo Code",
-                            value="Unavailable \u2014 use `/search_with_keywords` to claim",
-                            inline=False,
-                        )
-                    break
-
-            content = self._code_content(code)
-            view = self._deal_view(amz_url) if amz_url else None
-            await msg.edit(content=content, embed=embed, view=view)
-            return True
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            print(f"[DealRouter] Failed to edit message {message_id}: {e}")
-            return False
+        return posted

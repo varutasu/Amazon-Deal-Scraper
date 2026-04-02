@@ -97,11 +97,11 @@ class DatabaseHandler:
 
     # --- Code fetch queue ---
 
-    async def queue_code_fetch(self, deal_id, messages):
-        """Queue a deal for background code fetching. messages = [(channel_id, message_id), ...]"""
+    async def queue_code_fetch(self, deal_id, listing):
+        """Queue a deal for background code fetching. Stores the listing for posting after code is obtained."""
         await self.code_queue.insert_one({
             "deal_id": str(deal_id),
-            "messages": [{"channel_id": c, "message_id": m} for c, m in messages],
+            "listing": listing,
             "queued_at": datetime.now(timezone.utc),
         })
 

@@ -133,12 +133,17 @@ async def on_ready():
     await Notification.ensure_indexes()
     await load_cookies_from_mongo()
 
+    old_queue = await Notification.get_code_queue_size()
+    if old_queue > 0:
+        await Notification.clear_code_queue()
+        print(f"[Startup] Cleared {old_queue} stale code-queue items (format changed to code-first flow)")
+
     Notification_Routine.start()
     Deal_Routine.start()
     Code_Fetch_Routine.start()
     Cookie_Reload_Routine.start()
     print(f"[DealRouter] Scan routine started (interval={int(DEAL_SCAN_INTERVAL)}s, max_pages={DEAL_SCAN_MAX_PAGES})")
-    print(f"[CodeFetch] Background routine started (interval={int(CODE_FETCH_INTERVAL)}s)")
+    print(f"[CodeFetch] Code-first routine started (interval={int(CODE_FETCH_INTERVAL)}s)")
     print(f"[Cookies] Reload routine started (interval={int(COOKIE_RELOAD_INTERVAL)}s)")
 
     if not Constants.OVERRIDE_BLACKLIST:
@@ -149,14 +154,13 @@ async def on_ready():
 
 @tasks.loop(seconds=DEAL_SCAN_INTERVAL)
 async def Deal_Routine():
-    """Scan for new deals, post them immediately (without codes), queue for code fetching."""
+    """Scan for new deals, save to DB, and queue for code fetching (does NOT post to Discord)."""
     routes = await Notification.get_all_deal_routes()
     if not routes:
         return
 
     print("[DealRouter] Starting deal scan")
-    posted_count = 0
-    queued_count = 0
+    discovered = 0
 
     try:
         page = 1
@@ -192,13 +196,8 @@ async def Deal_Routine():
 
                 normalized = Helper.normalize_myvipon_deal(listing)
                 await Notification.upsert_deal(normalized)
-
-                posted_messages = await deal_router.post_deal_to_routes(listing, code_status="pending")
-                if posted_messages:
-                    await Notification.mark_deal_posted(deal_id)
-                    posted_count += 1
-                    await Notification.queue_code_fetch(deal_id, posted_messages)
-                    queued_count += 1
+                await Notification.queue_code_fetch(deal_id, listing)
+                discovered += 1
 
             page += 1
             await asyncio.sleep(1)
@@ -207,23 +206,22 @@ async def Deal_Routine():
         await log_error("Deal scan routine failed", e)
 
     queue_size = await Notification.get_code_queue_size()
-    print(f"[DealRouter] Scan complete — posted {posted_count} deal(s), queued {queued_count} for codes (queue size: {queue_size})")
+    print(f"[DealRouter] Scan complete — discovered {discovered} new deal(s), queue size: {queue_size}")
 
 
 @tasks.loop(seconds=CODE_FETCH_INTERVAL)
 async def Code_Fetch_Routine():
-    """Slowly process the code queue: fetch one code, edit the Discord messages."""
+    """Fetch a code from the queue, then post the deal to Discord with the code included."""
     if scraper.current is None:
         await load_cookies_from_mongo()
         if scraper.current is None:
-            stale = await Notification.expire_stale_code_queue(max_age_minutes=30)
-            if stale:
-                for item in stale:
-                    for msg_info in item.get("messages", []):
-                        await deal_router.edit_message_with_code(
-                            msg_info["channel_id"], msg_info["message_id"], None
-                        )
-                print(f"[CodeFetch] Expired {len(stale)} stale queue item(s) — no accounts available")
+            expired = await Notification.expire_stale_code_queue(max_age_minutes=60)
+            if expired:
+                for item in expired:
+                    deal_id = item["deal_id"]
+                    await Notification.mark_deal_posted(deal_id)
+                    await Notification.update_deal_code("myvipon", deal_id, None)
+                print(f"[CodeFetch] Expired {len(expired)} stale queue item(s) — no accounts available")
             return
 
     item = await Notification.dequeue_code_fetch()
@@ -231,7 +229,7 @@ async def Code_Fetch_Routine():
         return
 
     deal_id = item["deal_id"]
-    messages = item["messages"]
+    listing = item.get("listing", {})
 
     try:
         code = await bot.loop.run_in_executor(None, scraper.get_code, deal_id)
@@ -255,22 +253,18 @@ async def Code_Fetch_Routine():
     if is_valid_code:
         print(f"[CodeFetch] Got code for {deal_id}: {code[:20]}...")
         await Notification.update_deal_code("myvipon", deal_id, code)
+
+        posted = await deal_router.post_deal_with_code(listing, code)
+        if posted:
+            await Notification.mark_deal_posted(deal_id)
+            print(f"[CodeFetch] Posted deal {deal_id} with code to {posted} channel(s)")
+        else:
+            print(f"[CodeFetch] Deal {deal_id} has code but no matching routes or channels")
+            await Notification.mark_deal_posted(deal_id)
     else:
-        print(f"[CodeFetch] No code for {deal_id}: {code}")
+        print(f"[CodeFetch] No code for {deal_id}: {code} — skipping Discord post")
+        await Notification.mark_deal_posted(deal_id)
         await Notification.update_deal_code("myvipon", deal_id, None)
-
-    edited = 0
-    for msg_info in messages:
-        success = await deal_router.edit_message_with_code(
-            msg_info["channel_id"],
-            msg_info["message_id"],
-            code if is_valid_code else None,
-        )
-        if success:
-            edited += 1
-
-    if edited:
-        print(f"[CodeFetch] Edited {edited} message(s) for deal {deal_id}")
 
 
 # ─── Cookie Reload Routine ─────────────────────────────────────────
